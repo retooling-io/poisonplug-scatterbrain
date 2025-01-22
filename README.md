@@ -13,7 +13,9 @@ The library encapsulates the input as a `ProtectedInput` image, which is an obje
 
 # Usage 
 
-An example usage of the library is provided as follows.
+An example usage of the library is provided as follows with the following Python code that consumes from our library. Note, we are testing these on internal samples obtained from customers that we unfortunately cannot share publicly by the identical code provided below can be repurposed for any ScatterBrain-protected component. 
+
+We deliberately chose to produce a library rather than a standalone obfuscator 
 
 ```python
 from recover.recover_core import *
@@ -94,3 +96,19 @@ def CASE_F():
 #-------------------------------------------------------------------------------
 CASE_F()
 ```
+
+If we save the above code in a file called `example_deobfuscator.py` and run it against the samples hardcoded within, we'll see the following. Notice the slight delay, given it has to emulate over 16k instruction dispatchers that were recovered.
+
+![](data/deobfuscator-example.gif)
+
+Before inspecting the output for one of the deobfuscated binares (we'll just focus on the headerless backdoor, for the example), let us first observe one of them inside IDA so we can do a before and after comparisson.
+
+![](data/obfuscated-backdoor-headerless)
+
+An obfuscated headerless backdoor is virtually incomprehensible for either static or automatic analysis. We are immediately hit with the results of the CFG obfuscation that completely scatters the control flow of the binary. Let's compare it with the deobfuscated output.
+
+![](data/deobfuscated-backdoor-headerless)
+
+The distinction is night and day. We now have complete visibility into the obfuscated binary. And not only have we completely removed the obfuscation but we also produced a functional binary that can either be further detonated for any kind of dynamic analysis, or simply loaded into a debugger for a more controlled dynamic analysis. We opt for the latter below:
+
+![](data/debug.gif)
