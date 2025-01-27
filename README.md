@@ -19,7 +19,7 @@ An example usage of the library is provided as follows with the following Python
 ```python
 from recover.recover_core import *
 from recover.recover_dispatchers import recover_instruction_dispatchers
-from recover.recover_imports     import recover_imports, recover_imports_merge
+from recover.recover_imports     import recover_imports_merge
 from recover.recover_functions   import recover_recursive_in_full
 from recover.recover_output64    import rebuild_output
 #------------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def CASE_F():
             "".join([PATH, "780EBC3FAE807DD6E2039A2354C50388-backdoor-decrypted.bin"]),
             ProtectionType.HEADERLESS,
             imp_decrypt_const=IMP_CONST,
-            mutation_rules=RUL e_SET_1)
+            mutation_rules=RULE_SET_1)
         #--------------------------------------------------------------------------
         recover_instruction_dispatchers(d)
         assert len(d.dispatcher_locs) == 0x4090, f'length is {len(d.dispatcher_locs)}'
