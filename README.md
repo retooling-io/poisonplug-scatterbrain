@@ -1,6 +1,6 @@
 # Overview
 
-The repo contains a Python library that provides all of the facilities to comprehensively deobfuscate binaries protected by SHADOWPAD’s ScatterBrain obfuscator outlined in our blog post: [NOTE: add public link](https://cloud.google.com/blog/topics/threat-intelligence/)).
+The repo contains a Python library that provides all of the facilities to comprehensively deobfuscate binaries protected by SHADOWPAD’s ScatterBrain obfuscator outlined in our blog post: [NOTE: add public link](https://cloud.google.com/blog/topics/threat-intelligence/).
 
 
 The core logic amounts to taking a ScatterBrain-protected binary as input and producing a new, functional binary completely free of any protections as the output. This is achieved through a series of deobfuscation passes until the final, deobfuscated state is achieved. This state is then converted to a fully functional executable e.g. exe, dll.  It works for all known ScatterBrain components that we manged to uncover, which includes all droppers, backdoors, and any POISONPLUG.SHADOWPAD plugins. 
