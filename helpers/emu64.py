@@ -19,6 +19,13 @@ own in Python.
 """
 try:
     import unicorn
+    if (
+        unicorn.UC_VERSION_MAJOR == 2 and
+        unicorn.UC_VERSION_MINOR >= 1
+    ):
+        # @TODO: unicorn added cosmetic updates that break how one instantiates
+        #        a subclass. Add support eventually for both.
+        raise ImportError("Unsupported 2.1.x unicorn version")
     import ucutils
     import ucutils.emu
     import ucutils.plat.win64
