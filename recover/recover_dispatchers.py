@@ -230,6 +230,7 @@ def _verify_dispatcher_pushfq(
             continue
 
         if (
+            x86.X86_GRP_RET in instr.groups or
             x86.X86_GRP_CALL in instr.groups or
             x86.X86_GRP_PRIVILEGE in instr.groups or
             instr.is_jmp() and (instr.is_op1_reg or instr.is_op1_mem)
