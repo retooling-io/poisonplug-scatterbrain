@@ -83,7 +83,7 @@ def rebuild_output(
             end  = found + len(END_MARKER)
             d.newimgbuffer[start:end] = bytearray(end-start)
             #-------------------------------------------------------------------
-            d.func_rva = d.selective_func_rva
+            func_rva = d.selective_func_rva
 
         case ProtectionType.FULL:
             (
@@ -168,11 +168,9 @@ class Relocation: # just a namespace
             try:
                 Relocation.apply_all_fixups_to_rfn(d, rfn)
             except Exception as e:
-                raise
-        #-----------------------------------------------------------------------
-        if preserve_original_imports:
-            Relocation.preserve_original_imports(d)
-            d.log.info("Preserved original imports that weren't protected")
+                d.log.error(f"Failed to apply fixups for function {rfn.func_start_ea:#08x}: {e}")
+                continue
+        
         d.log.info("Completed rebuild of relocations")
 
     @staticmethod
@@ -271,9 +269,7 @@ class Relocation: # just a namespace
                 raise ValueError(
                     f'[Failed_{tag}_Reloc]: {r.func_start_ea:#08x}: '
                     f'{r.instr}, {r.reloc_instr}')
-            d.newimgbuffer[r.reloc_ea:r.reloc_ea+r.reloc_instr.size] = (
-                r.updated_bytes
-            )
+            d.newimgbuffer[r.reloc_ea:r.reloc_ea+r.reloc_instr.size] = r.updated_bytes
         """---------------------------------------------------------------------
         Imports
             d.imports:             dict[call/jmp addr]: RecoveredImport
@@ -283,7 +279,8 @@ class Relocation: # just a namespace
         for r in rfn.relocs_imports:
             if r.is_boundary_jmp:
                 r.is_obf_import = False
-                d.log.info(f'\tskipping synthetic jump that is linked to protected import {r}')
+                if LOG:
+                    d.log.info(f'\tskipping synthetic jump that is linked to protected import {r}')
                 continue
 
             r.updated_bytes = bytearray(r.instr.bytes)
@@ -299,16 +296,22 @@ class Relocation: # just a namespace
             elif imp_entry == 'Empty':
                 continue
 
-            imp_entry.new_rva = d.import_to_rva_map.get(imp_entry.api_name)
-            if not imp_entry.new_rva:
-                d.log.warning(f'[RelocImports] Could find new rva for: {r}')
+            # Get new RVA for this import
+            new_rva = d.import_to_rva_map.get(imp_entry.api_name)
+            if not new_rva:
+                d.log.warning(f'[RelocImports] Could not find new RVA for: {imp_entry.api_name}')
+                continue
 
-            resolve_disp_fixup_and_apply(r, imp_entry.new_rva)
+            # Update the import entry
+            imp_entry.new_rva = new_rva
+            
+            # Apply the fixup
+            resolve_disp_fixup_and_apply(r, new_rva)
             update_reloc_in_img(r, "Import")
 
-            s = f'{imp_entry.dll_name}!{imp_entry.api_name}'
             if LOG:
-                d.log.info(f'RelocatedImport: {s:<40} {r.reloc_instr}')
+                import_name = f'{imp_entry.dll_name}!{imp_entry.api_name}'
+                d.log.info(f'RelocatedImport: {import_name:<40} {r.reloc_instr}')
 
         """---------------------------------------------------------------------
         ControlFlow

@@ -191,5 +191,5 @@ def recover_recursive_in_full(
                         d.log.info(f'\tLEA code reference: {func_to_explore[-1]:#08x} ({rfn})')
             except Exception as e:
                 d.log.error(f'{e}')
-                raise
+                continue
     return recovered_funcs

@@ -99,7 +99,8 @@ def recover_imports_merge(
         _preserve_original_imports(d, potential_stubs)
     #---------------------------------------------------------------------------
     if len(d.imports) == 0:
-        raise ValueError("Import recovery failed. Turn on debug utilities.")
+        d.log.error("Import recovery failed. Trying to preserve original imports.")
+        _preserve_original_imports(d, potential_stubs, LOG=LOG)
 
 def recover_imports(
     d: ProtectedInput64
@@ -635,10 +636,11 @@ def _get_dll_api_names_non_headerless(
 
 def _preserve_original_imports(
     d: ProtectedInput64,
-    potential_stubs
+    potential_stubs,
+    LOG: bool = False
 ):
     """
-    Preserves original imports in cases where only selected functions are protected.
+    Enhanced version that creates proper RecoveredImport objects for original imports
     """
     imports_to_preserve = {}
     for desc_entry in d.pe.DIRECTORY_ENTRY_IMPORT:
@@ -649,20 +651,40 @@ def _preserve_original_imports(
     for rva in potential_stubs:
         if rva in d.imports:
             continue  # Protected stubs
-        instr = d.mdp.decode(rva)
-        if not (instr.is_call() or instr.is_jmp()):
-            continue  # Skip if not call or jmp
-        if 'rip' not in instr.op_str:
-            continue
-
-        target = imgbase + (instr.ea + instr.size + instr.Op1.mem.disp)
+            
         try:
-            dll_name, api_name = imports_to_preserve[target]
-            d.imp_dict_builder[dll_name].add(api_name)
-            d.imports_to_preserve[instr.ea] = api_name, instr.size
-            d.log.info(f'Preserving: {dll_name}: {api_name}')
-        except Exception:
-            d.log.warning(f'\tMissed import: {instr}')
+            instr = d.mdp.decode(rva)
+            if not (instr.is_call() or instr.is_jmp()):
+                continue  # Skip if not call or jmp
+            if 'rip' not in instr.op_str:
+                continue
+
+            target = imgbase + (instr.ea + instr.size + instr.Op1.mem.disp)
+            if target in imports_to_preserve:
+                dll_name, api_name = imports_to_preserve[target]
+                
+                # Create a proper RecoveredImport object for original imports
+                recovered_imp = RecoveredImport(
+                    call_instr=instr,
+                    ref_instr=None,  # No ref_instr for original imports
+                    stub_id=0xFFFFFFFF,
+                    stub_ea=0xFFFFFFFF,
+                    stub_rfn=None,
+                    dll_name=dll_name,
+                    api_name=api_name
+                )
+                
+                # Add to both maps
+                d.imports[instr.ea] = recovered_imp
+                d.imp_dict_builder[dll_name].add(api_name)
+                d.imports_to_preserve[instr.ea] = (api_name, instr.size)
+                
+                if LOG:
+                    d.log.info(f'Preserving original import: {dll_name}!{api_name} at {instr.ea:#08x}')
+        except Exception as e:
+            if LOG:
+                d.log.warning(f'Failed to preserve import at {rva:#08x}: {e}')
+
 
 # @TODO: wip
 def recover_imp_crypt_const():

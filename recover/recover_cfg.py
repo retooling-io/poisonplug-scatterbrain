@@ -108,18 +108,34 @@ def recover_cfg_step(
         CONTINUE = 0
         STOP = 1
 
+    def _is_valid_code_address(ea: int) -> bool:
+        """Check if address is within the code section bounds"""
+        if d.code_range_rva is None:
+            # Fallback: check if it's before data section
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+
     def _step(
         d: ProtectedInput64,
         s: CFGStepState
     ) -> StepResult:
         if not s.to_explore:
-            return False
+            return StepResult.STOP
+            
         curr_ea: int = s.to_explore.pop()
+        
+        # Check bounds before processing
+        if not _is_valid_code_address(curr_ea):
+            if s.log:
+                d.log.warning(f'[RecoverCfg] Skipping address outside code section: {curr_ea:#08x}')
+            return StepResult.CONTINUE
+            
         if (
             curr_ea in s.visited or
             len(s.recovered) >= s.MAX_INSTRS
         ):
-            return True # Continue
+            return StepResult.CONTINUE
+            
         s.visited.add(curr_ea)
         #-----------------------------------------------------------------------
         try: # exceptions can throw on decoding
@@ -129,7 +145,7 @@ def recover_cfg_step(
         except Exception as e:
             es = f'decoding failed at {curr_ea:08x} (prev_instr) {s.prev_instr}'
             d.log.error(es)
-            raise ValueError(es)
+            return StepResult.CONTINUE  # Continue instead of raising
         #-----------------------------------------------------------------------
         for rule in d.mutation_rules:
             match rule(d, s, instr):
@@ -138,18 +154,31 @@ def recover_cfg_step(
                 case RuleResult.BREAK:
                     input("Add break logic here")
                     return StepResult.STOP
-        s.recovered.append(
-            RecoveredInstr(func_start_ea=s.func_start_ea,
-                           instr=instr)
-        )
-        s.ea_to_recovered[instr.ea] = s.recovered[-1]
-        s.to_explore.append(instr.ea + instr.size)
+        
+        # Validate next address before adding to exploration
+        next_ea = instr.ea + instr.size
+        if _is_valid_code_address(next_ea):
+            s.recovered.append(
+                RecoveredInstr(func_start_ea=s.func_start_ea,
+                                instr=instr)
+            )
+            s.ea_to_recovered[instr.ea] = s.recovered[-1]
+            s.to_explore.append(next_ea)
+        elif s.log:
+            d.log.warning(f'[RecoverCfg] Next instruction would be outside code section: {next_ea:#08x}')
+            
         return StepResult.CONTINUE
     #---------------------------------------------------------------------------
     # build the stepping state and do the raw recovery first
-    s: CFGStepState = CFGStepState(func_start_ea=func_start_ea,log=LOG)
+    s: CFGStepState = CFGStepState(func_start_ea=func_start_ea, log=LOG)
+    
+    # Validate starting address
+    if not _is_valid_code_address(func_start_ea):
+        raise ValueError(f"Function start address {func_start_ea:#08x} is outside code section")
+    
     while s.to_explore:
-        if not _step(d,s):
+        result = _step(d, s)
+        if result == StepResult.STOP:
             break
 
     normalize_raw_recovery(d, s)
@@ -192,7 +221,14 @@ def normalize_raw_recovery(
     d: ProtectedInput64,
     s: CFGStepState
 ):
+    """Normalization with bounds checking"""
     assert s.recovered is not None or len(s.recovered) != 0
+    
+    def _is_valid_code_address(ea: int) -> bool:
+        """Check if address is within the code section bounds"""
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
     #---------------------------------------------------------------------------
     # 3 helpers for the normalization
     def walk_backbone(instr_ea: int):
@@ -205,10 +241,15 @@ def normalize_raw_recovery(
         """
         curr_ea = instr_ea
         while curr_ea in s.obf_backbone or curr_ea in d.dispatcher_locs:
-            curr_ea = (
-                d.dispatchers_to_target[curr_ea] if curr_ea in d.dispatcher_locs
-                else s.obf_backbone[curr_ea]
-            )
+            if curr_ea in d.dispatcher_locs:
+                curr_ea = d.dispatchers_to_target[curr_ea]
+            else:
+                curr_ea = s.obf_backbone[curr_ea]
+            
+            # Add bounds check to prevent infinite loops or invalid addresses
+            if not _is_valid_code_address(curr_ea):
+                d.log.warning(f'[Normalize] walk_backbone reached invalid address: {curr_ea:#08x}')
+                break
         return curr_ea
     #---------------------------------------------------------------------------
     def update_branch_targets():
@@ -217,9 +258,18 @@ def normalize_raw_recovery(
             if r.instr.is_jcc() or (r.instr.is_jmp() and r.instr.is_op1_imm):
                 # targets can still point to backbone
                 branch_dest = walk_backbone(r.instr.Op1.imm)
+                
+                # Validate branch destination before updating
+                if not _is_valid_code_address(branch_dest):
+                    d.log.warning(f'[Normalize] Invalid branch target: {branch_dest:#08x} for {r.instr}')
+                    continue
+                    
                 branch_str  = f'{r.instr.mnemonic} {branch_dest:#08x}'
-                nb = d.ks.asm(branch_str, addr=r.instr.ea, as_bytes=True)[0]
-                r.instr = d.mdp.decode_buffer(nb, r.instr.ea)
+                try:
+                    nb = d.ks.asm(branch_str, addr=r.instr.ea, as_bytes=True)[0]
+                    r.instr = d.mdp.decode_buffer(nb, r.instr.ea)
+                except Exception as e:
+                    d.log.warning(f'[Normalize] Failed to update branch target for {r.instr}: {e}')
     #---------------------------------------------------------------------------
     def is_boundary_instr(r: RecoveredInstr):
         return (
@@ -234,8 +284,15 @@ def normalize_raw_recovery(
         if is_boundary_instr(r): continue
         #-----------------------------------------------------------------------
         fall_through_ea = walk_backbone(r.instr.ea + r.instr.size)
+        
+        # Validate fall-through address
+        if not _is_valid_code_address(fall_through_ea):
+            d.log.warning(f'[Normalize] Invalid fall-through address: {fall_through_ea:#08x} for {r.instr}')
+            continue
+            
         if not fall_through_ea in s.ea_to_recovered:
-            raise ValueError(f'Unexpected fall through address {fall_through_ea:08x} in {r}')
+            d.log.warning(f'[Normalize] Unexpected fall through address {fall_through_ea:08x} in {r}')
+            continue
         #-----------------------------------------------------------------------
         if (
             i < len(s.recovered)-1 and
@@ -243,14 +300,17 @@ def normalize_raw_recovery(
         ):
             if fall_through_ea in s.ea_to_linear:
                 sjr = f'jmp {fall_through_ea:#08x}'
-                b = d.ks.asm(sjr, addr=r.instr.ea, as_bytes=True)[0]
-                synthetic_jmp = d.mdp.decode_buffer(b, r.instr.ea)
-                s.normalized_flow.append(
-                    RecoveredInstr(func_start_ea=r.func_start_ea,
-                                   instr=synthetic_jmp,
-                                   linear_ea=-1, #curr_linear_ea,
-                                   is_boundary_jmp=True)
-                )
+                try:
+                    b = d.ks.asm(sjr, addr=r.instr.ea, as_bytes=True)[0]
+                    synthetic_jmp = d.mdp.decode_buffer(b, r.instr.ea)
+                    s.normalized_flow.append(
+                        RecoveredInstr(func_start_ea=r.func_start_ea,
+                                       instr=synthetic_jmp,
+                                       linear_ea=-1, #curr_linear_ea,
+                                       is_boundary_jmp=True)
+                    )
+                except Exception as e:
+                    d.log.warning(f'[Normalize] Failed to create synthetic jump: {e}')
             else:
                 connected_instr = s.ea_to_recovered[fall_through_ea]
                 s.normalized_flow.append(connected_instr)
@@ -259,16 +319,21 @@ def normalize_raw_recovery(
             # last instruction is not a known function boundary if this path is
             # reached. Add a synthetic boundary jmp to merge the boundary.
             # @NOTE: did I assert here becasue some JCC edge case I hit w/o recalling?
-            assert fall_through_ea in s.ea_to_linear 
-            #----------------------------------------------------------------------
-            bjs = f'jmp {fall_through_ea:#08x}'
-            b = d.ks.asm(bjs, addr=r.instr.ea, as_bytes=True)[0]
-            boundary_jmp = d.mdp.decode_buffer(b, r.instr.ea)
-            s.normalized_flow.append(
-                RecoveredInstr(func_start_ea=s.func_start_ea,
-                               instr=boundary_jmp,
-                               is_boundary_jmp=True)
-            )
+            if fall_through_ea in s.ea_to_linear:
+                #----------------------------------------------------------------------
+                bjs = f'jmp {fall_through_ea:#08x}'
+                try:
+                    b = d.ks.asm(bjs, addr=r.instr.ea, as_bytes=True)[0]
+                    boundary_jmp = d.mdp.decode_buffer(b, r.instr.ea)
+                    s.normalized_flow.append(
+                        RecoveredInstr(func_start_ea=s.func_start_ea,
+                                       instr=boundary_jmp,
+                                       is_boundary_jmp=True)
+                    )
+                except Exception as e:
+                    d.log.warning(f'[Normalize] Failed to create boundary jump: {e}')
+            else:
+                d.log.warning(f'[Normalize] Cannot create boundary jump - target not in linear flow: {fall_through_ea:#08x}')
     #---------------------------------------------------------------------------
     # updating before or alongside breaks how the fall through address is calculated
     update_branch_targets()

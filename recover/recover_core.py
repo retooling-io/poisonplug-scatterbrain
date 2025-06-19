@@ -781,3 +781,188 @@ RULE_SET_2 = [
     RULE_HANDLE_STANDARD_JCC,
     RULE_HANDLE_RET_INT3
 ]
+
+def RULE_HANDLE_DISPATCHER_JMP_AND_STANDARD_JMPS_BOUNDED(
+    d: ProtectedInput64,
+    s: 'CFGStepState',
+    instr: x86Instr
+) -> RuleResult:
+    """Enhanced version with bounds checking"""
+    def _is_valid_code_address(ea: int) -> bool:
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+    
+    if instr.is_jmp() and instr.ea in d.dispatcher_locs:
+        jmp_dest = instr.get_op1_imm()
+        if _is_valid_code_address(jmp_dest):
+            s.obf_backbone[instr.ea] = jmp_dest
+            s.to_explore.append(jmp_dest)
+        elif s.log:
+            d.log.warning(f'[Rule] Dispatcher jump destination outside code: {jmp_dest:#08x}')
+        return RuleResult.CONTINUE
+    elif instr.is_jmp():
+        rinstr = RecoveredInstr(func_start_ea=s.func_start_ea, instr=instr)
+        s.recovered.append(rinstr)
+        s.ea_to_recovered[instr.ea] = rinstr
+        #----------------------------------------------------------------------
+        if instr.is_op1_reg or instr.is_op1_mem:
+            return RuleResult.CONTINUE
+        jmp_dest = instr.get_op1_imm()
+        if _is_valid_code_address(jmp_dest):
+            s.to_explore.append(jmp_dest)
+        elif s.log:
+            d.log.warning(f'[Rule] Jump destination outside code: {jmp_dest:#08x}')
+        return RuleResult.CONTINUE
+    return RuleResult.NEXT_RULE
+
+def RULE_HANDLE_TEST_OPAQUE_PREDICATE_BOUNDED(
+    d: ProtectedInput64,
+    s: 'CFGStepState',
+    instr: x86Instr
+) -> RuleResult:
+    """Enhanced version with bounds checking"""
+    def _is_valid_code_address(ea: int) -> bool:
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+    
+    def _verify_test_op():
+        if not (
+            instr.is_test() and
+            instr.is_op1_reg and
+            instr.is_op2_imm and
+            instr.get_op2_imm() == 0
+        ):
+            return False, None
+        next_instr = d.mdp.decode_next_insn_incl_jmp(instr)
+        return (True, next_instr) if next_instr.is_jcc() else (False, None)
+    
+    is_backbone, following_instr = _verify_test_op()
+    if is_backbone:
+        link_instr = d.mdp.decode_next_insn(following_instr)
+        if _is_valid_code_address(link_instr.ea):
+            s.obf_backbone[instr.ea] = link_instr.ea
+            s.to_explore.append(link_instr.ea)
+        elif s.log:
+            d.log.warning(f'[Rule] Test opaque predicate target outside code: {link_instr.ea:#08x}')
+        return RuleResult.CONTINUE
+    return RuleResult.NEXT_RULE
+
+def RULE_HANDLE_BACK2BACK_JCC_BOUNDED(
+    d: ProtectedInput64,
+    s: 'CFGStepState',
+    instr: x86Instr
+) -> RuleResult:
+    """Enhanced version with bounds checking"""
+    def _is_valid_code_address(ea: int) -> bool:
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+    
+    def _verify_b2b_same_jcc():
+        if not instr.is_jcc(): 
+            return False, None
+        next_instr = d.mdp.decode_next_insn_incl_jmp(instr)
+        return (True, next_instr) if instr.id == next_instr.id else (False, None)
+    
+    is_backbone, following_instr = _verify_b2b_same_jcc()
+    if is_backbone:
+        s.recovered.append(
+            RecoveredInstr(func_start_ea=s.func_start_ea, instr=instr)
+        )
+        s.ea_to_recovered[instr.ea] = s.recovered[-1]
+        s.obf_backbone[following_instr.ea] = following_instr.ea + following_instr.size
+
+        branch_dest = instr.get_op1_imm()
+        fall_through = following_instr.ea + following_instr.size
+        
+        if _is_valid_code_address(branch_dest):
+            s.to_explore.append(branch_dest)
+        elif s.log:
+            d.log.warning(f'[Rule] B2B JCC branch destination outside code: {branch_dest:#08x}')
+            
+        if _is_valid_code_address(fall_through):
+            s.to_explore.append(fall_through)
+        elif s.log:
+            d.log.warning(f'[Rule] B2B JCC fall-through outside code: {fall_through:#08x}')
+            
+        return RuleResult.CONTINUE
+    return RuleResult.NEXT_RULE
+
+def RULE_HANDLE_STANDARD_JCC_BOUNDED(
+    d: ProtectedInput64,
+    s: 'CFGStepState',
+    instr: x86Instr
+) -> RuleResult:
+    """Enhanced version with bounds checking"""
+    def _is_valid_code_address(ea: int) -> bool:
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+    
+    if instr.is_jcc():
+        s.recovered.append(
+            RecoveredInstr(func_start_ea=s.func_start_ea, instr=instr)
+        )
+        s.ea_to_recovered[instr.ea] = s.recovered[-1]
+        
+        branch_dest = instr.get_op1_imm()
+        fall_through = instr.ea + instr.size
+        
+        if _is_valid_code_address(branch_dest):
+            s.to_explore.append(branch_dest)
+        elif s.log:
+            d.log.warning(f'[Rule] JCC branch destination outside code: {branch_dest:#08x}')
+            
+        if _is_valid_code_address(fall_through):
+            s.to_explore.append(fall_through)
+        elif s.log:
+            d.log.warning(f'[Rule] JCC fall-through outside code: {fall_through:#08x}')
+            
+        return RuleResult.CONTINUE
+    return RuleResult.NEXT_RULE
+
+def RULE_HANDLE_CMP_RSP_IMM_BOUNDED(
+    d: ProtectedInput64,
+    s: 'CFGStepState',
+    instr: x86Instr
+) -> RuleResult:
+    """Enhanced version with bounds checking"""
+    def _is_valid_code_address(ea: int) -> bool:
+        if d.code_range_rva is None:
+            return ea < d.DATA_SECTION_EA
+        return ea in d.code_range_rva
+    
+    if (
+        instr.is_cmp() and
+        instr.is_op1_reg_rsp() and
+        instr.is_op2_imm
+    ):
+        next_instr = d.mdp.decode_next_insn_incl_jmp(instr)
+        assert next_instr.is_jcc()
+
+        next_ea = next_instr.ea + next_instr.size
+        if _is_valid_code_address(next_ea):
+            s.obf_backbone[instr.ea] = next_ea
+            s.to_explore.append(next_ea)
+        elif s.log:
+            d.log.warning(f'[Rule] CMP RSP target outside code: {next_ea:#08x}')
+        return RuleResult.CONTINUE
+    return RuleResult.NEXT_RULE
+
+# Updated rule sets using bounded versions
+RULE_SET_1_BOUNDED = [
+    RULE_HANDLE_DISPATCHER_JMP_AND_STANDARD_JMPS_BOUNDED,
+    RULE_HANDLE_TEST_OPAQUE_PREDICATE_BOUNDED,
+    RULE_HANDLE_BACK2BACK_JCC_BOUNDED,
+    RULE_HANDLE_STANDARD_JCC_BOUNDED,
+    RULE_HANDLE_RET_INT3  # This one doesn't need bounds checking
+]
+
+RULE_SET_2_BOUNDED = [
+    RULE_HANDLE_DISPATCHER_JMP_AND_STANDARD_JMPS_BOUNDED,
+    RULE_HANDLE_CMP_RSP_IMM_BOUNDED,
+    RULE_HANDLE_STANDARD_JCC_BOUNDED,
+    RULE_HANDLE_RET_INT3  # This one doesn't need bounds checking
+]
