@@ -1,0 +1,7 @@
+capstone==5.0.6
+hexdump==3.3
+keystone-engine==0.9.2
+pefile==2024.8.26
+setuptools==80.0.0
+ucutils==0.3.0
+unicorn==2.0.1.post1
